@@ -1,0 +1,79 @@
+from flask import Flask, request, jsonify, make_response, send_file
+from flask_cors import CORS
+import os
+import pdfplumber
+import openai
+from docx import Document
+import csv
+import xlrd  # for Excel files
+import pandas as pd  # for Excel and CSV
+
+
+app = Flask(__name__)
+CORS(app, origins=["https://fileconvertify.com"])
+
+@app.route('/upload', methods=['POST'])
+def upload_file():
+    file = request.files['file']
+    new_filename = file.filename  # Placeholder
+
+    # Save the file first
+    temp_path = os.path.join('/home/kinggpt/', 'temp_file.pdf')
+    file.save(temp_path)
+    try:
+        text = ""
+        file_extension = os.path.splitext(file.filename)[1]
+        # Extract text based on file type
+        if file_extension == '.pdf':
+            with pdfplumber.open(temp_path) as pdf:
+                first_page = pdf.pages[0]
+                text = first_page.extract_text()[:1000]
+        elif file_extension == '.docx':
+            doc = Document(temp_path)
+            for para in doc.paragraphs:
+                text += para.text + '\n'
+            text = text[:1000]
+        elif file_extension == '.csv':
+            df = pd.read_csv(temp_path)
+            text = df.head().to_string()
+        elif file_extension == '.xlsx':
+            df = pd.read_excel(temp_path)
+            text = df.head().to_string()
+        else:
+            return jsonify({"error": "Unsupported file type", "display_error": "The file type you uploaded is not supported."})
+
+        # Call OpenAI API to summarize (replace "your-api-key-here")
+        openai.api_key = "sk-null"
+
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Respond only with a concise, descriptive file name based on the file contents provided by the user."
+                },
+                {
+                    "role": "user",
+                    "content": f"File text: \"{text}\""
+                }
+            ],
+            temperature=1,
+            max_tokens=48,
+            top_p=1,
+            frequency_penalty=0,
+            presence_penalty=0
+        )
+
+        new_filename = response['choices'][0]['message']['content'].strip().replace('\n', ' ').replace('\r', '') + ".pdf"
+
+        # Rename the file
+        full_path = os.path.join('/home/kinggpt/', new_filename)
+        os.rename(temp_path, full_path)
+
+        # Respond with the new filename
+        response = make_response(send_file(full_path))
+        response.headers['Content-Disposition'] = f'attachment; filename={new_filename}'
+        return jsonify({"new_filename": new_filename, "download_url": f"/download/{new_filename}"})
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
